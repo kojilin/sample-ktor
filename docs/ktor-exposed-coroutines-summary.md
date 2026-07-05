@@ -112,6 +112,37 @@ and a cancelled `Semaphore.acquire` cannot leak a permit. The dedicated dispatch
 blocking JDBC off the Netty event loop *and* (on 0.x) forces the dispatched resume that
 prevents the stale window.
 
+**Q: Without the permit — isn't HikariCP alone enough?**
+No pool at all → **unbounded**: the suspended variant holds its connection across suspensions
+while freed threads accept more requests, each opening a new connection, until the DB's
+`max_connections`. Hikari alone → the connection *count* is capped (that's its job), but the
+overflow turns into `getConnection()` **blocking dbDispatcher threads** (up to Hikari's 30s
+`connectionTimeout`), an unbounded suspended queue upstream — and a **resume-starvation
+deadlock**: suspended transactions that *hold* connections need a dbDispatcher thread to
+resume on and release them; if all (few) dispatcher threads are blocked in `getConnection()`
+waiting for those very connections, the DB layer freezes until `connectionTimeout` fails the
+waiters, then the cycle repeats — 30-second sawtooth stalls under sustained load. The permit
+rule **permits = `maximumPoolSize`** makes `getConnection()` mathematically never block
+(connections are returned before permits are released), so the deadlock cannot form. On plain
+JDBC + platform threads, Hikari and the permit are complements, not alternatives.
+
+**Q: When does the permit become unnecessary?**
+Two stacks dissolve it: **(a) JDBC + virtual threads** (Java 21+): use
+`Executors.newVirtualThreadPerTaskExecutor().asCoroutineDispatcher()` as the dbDispatcher —
+blocked `getConnection()` parks a cheap virtual thread, and the starvation deadlock is
+structurally impossible because the dispatcher has no finite pool for waiters to occupy;
+Hikari's `maximumPoolSize` remains the connection bound and `connectionTimeout` becomes the
+shedding mechanism. Caveat: on Java 21, `synchronized` in the JDBC driver *pins* carrier
+threads (check with `-Djdk.tracePinnedThreads=full`; older MySQL Connector/J is the classic
+offender); Java 24 (JEP 491) removes synchronized pinning entirely. **(b) R2DBC** (requires
+Exposed 1.x `exposed-r2dbc`): DB I/O itself suspends and `r2dbc-pool`'s acquire is a
+non-blocking suspend with `maxSize` / `acquireTimeout` / `maxPendingAcquireSize` — the pool
+natively provides everything `PermitController` hand-builds. Note the payoff of either is
+bounded by pool size (30 parked platform threads → 0), unlike HTTP clients; and the connection
+*bound itself* never goes away — it just stops being our code. The dedicated-dispatcher jobs
+(SQL off the event loop; dispatched resume on 0.x) are still covered by the virtual-thread
+dispatcher in option (a).
+
 **Q: Does the stale window ever cross requests?**
 Never observed, by design: cleanup always runs by the next real suspension (e.g. writing the
 response). It survives *non-dispatching* constructs though — plain suspend calls and

@@ -78,6 +78,13 @@ cross into the next request.
    in `withPermit`, treat a current transaction as absent if its connection is closed:
    `transactionManager.currentOrNull()?.takeUnless { it.connection.isClosed }`.
 4. One `PermitController` per `Database`, permits = pool size = dbDispatcher threads.
+   Why permits can't be replaced by HikariCP alone (on platform threads): without permits,
+   pool exhaustion blocks `getConnection()` on dbDispatcher threads, and suspended
+   connection-holders then have no thread to resume on to release their connections —
+   a resume-starvation deadlock that stalls the DB layer until Hikari's `connectionTimeout`.
+   permits = `maximumPoolSize` guarantees `getConnection()` never blocks. The permit becomes
+   unnecessary only with a virtual-thread dbDispatcher (Java 21+, watch driver pinning until
+   Java 24) or with R2DBC on Exposed 1.x — see the team summary FAQ for details.
 5. `supervisorScope` around `newSuspendedTransaction` stays until Exposed 1.0
    (JetBrains/Exposed#1075, fixed in 1.0.0-rc-1 by PR #2601).
 
