@@ -12,6 +12,11 @@ import org.jetbrains.exposed.sql.transactions.transactionManager
 import kotlin.time.Duration.Companion.seconds
 
 
+/**
+ * Bounds concurrent open connections for a single [Database]. Use one instance
+ * per database, with permits matching that database's max connections
+ * (e.g. HikariCP maximumPoolSize), so holding a permit implies a free connection.
+ */
 class PermitController {
     private val semaphore = Semaphore(30)
     suspend fun <T> permit(block: suspend () -> T): T {
@@ -35,6 +40,9 @@ class PermitController {
 }
 
 private suspend fun <T> Database.withPermit(permitController: PermitController, block: suspend () -> T): T {
+    // An ongoing transaction for this database already holds a permit and its
+    // connection is reused; acquiring a second permit here could deadlock once
+    // all permits are held by transactions waiting on nested calls.
     if (transactionManager.currentOrNull() != null) {
         return block()
     }
@@ -59,6 +67,8 @@ suspend fun <T> Database.suspendedTransactionOnDbDispatcher(
     dbDispatcher: CoroutineDispatcher,
     statement: suspend Transaction.() -> T
 ): T = withPermit(permitController) {
+    // supervisorScope: a failed transaction must not cancel the caller's scope,
+    // see https://github.com/JetBrains/Exposed/issues/1075 (fixed in 1.0.0-rc-1)
     supervisorScope {
         transactionManager.currentOrNull()?.withSuspendTransaction(
             dbDispatcher,
