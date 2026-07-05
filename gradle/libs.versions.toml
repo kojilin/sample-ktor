@@ -1,7 +1,7 @@
 
 [versions]
 kotlin-version = "2.1.10"
-ktor-version = "3.2.1"
+ktor-version = "2.3.12"
 logback-version = "1.4.14"
 exposed-version = "0.56.0"
 
@@ -14,6 +14,7 @@ ktor-server-test-host = { module = "io.ktor:ktor-server-test-host", version.ref 
 kotlin-test-junit = { module = "org.jetbrains.kotlin:kotlin-test-junit", version.ref = "kotlin-version" }
 exposed-core = { module = "org.jetbrains.exposed:exposed-core", version.ref = "exposed-version" }
 exposed-jdbc = { module = "org.jetbrains.exposed:exposed-jdbc", version.ref = "exposed-version" }
+h2 = { module = "com.h2database:h2", version = "2.3.232" }
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin-version" }

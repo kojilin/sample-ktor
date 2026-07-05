@@ -1,3 +1,5 @@
+package com.example
+
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.supervisorScope
 import kotlinx.coroutines.sync.Semaphore

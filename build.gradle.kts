@@ -16,9 +16,11 @@ application {
 }
 
 // start with development mode
-ktor {
-    development = true
-}
+// NOTE: ktor plugin 2.3.12 has no `development` property; use
+// JAVA_TOOL_OPTIONS=-Dio.ktor.development=true while testing on 2.3.12
+// ktor {
+//     development = true
+// }
 
 repositories {
     mavenCentral()
@@ -31,6 +33,7 @@ dependencies {
     implementation(libs.ktor.server.config.yaml)
     implementation(libs.exposed.core)
     implementation(libs.exposed.jdbc)
+    implementation(libs.h2)
     testImplementation(libs.ktor.server.test.host)
     testImplementation(libs.kotlin.test.junit)
 }
