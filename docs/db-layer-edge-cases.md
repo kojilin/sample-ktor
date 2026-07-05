@@ -20,26 +20,44 @@ permit timeout doesn't cover. With permits ≤ threads, holding a permit guarant
 
 ## 1. Waiting on other DB work while inside a transaction
 
+Not about multiple databases — one DB, one PermitController. The trap is about **who** runs the
+DB work. Transaction context travels down your own call stack, **not sideways to other
+coroutines**:
+
 ```kotlin
+// ✅ SAFE — nested call in the SAME coroutine: joins your tx, no second permit
 db.suspendedTransactionOnDbDispatcher(permits, dispatcher) {
     val user = findUser(id)
-    // BAD: this await is served by a coroutine that ALSO opens a transaction
-    val report = reportDeferred.await()
-    saveReport(user, report)
+    val stats = statsService.loadStats(user)  // internally uses the helper → joins
+    save(user, stats)
+}
+
+// ❌ TRAP — DB work in a DIFFERENT coroutine while you hold a permit
+val reportDeferred = appScope.async {                    // independent coroutine
+    db.suspendedTransactionOnDbDispatcher(permits, dispatcher) {
+        runHeavyAggregation()                            // needs its OWN permit
+    }
+}
+db.suspendedTransactionOnDbDispatcher(permits, dispatcher) {  // you hold a permit
+    val report = reportDeferred.await()                  // wait for the other coroutine
+    saveUserReport(findUser(id), report)
 }
 ```
 
-You hold a permit and wait for work that needs a permit. If 30 requests do this at once, all
-permits are held by waiters → nobody progresses → everything fails after the 30s timeout, then
-the cycle repeats under load. A→B→A across two databases is just the two-DB version of this.
+Walk it with permits = 1: you take the only permit → you `await()` → the async needs the permit
+you're holding → it waits for you, you wait for it → frozen 30s → both fail. With 30 permits
+the same happens under load: 30 requests each hold a permit awaiting a worker that needs one.
+(A→B→A across two databases is just the two-DB flavor of the same hold-and-wait.)
 
-**Spring equivalent: yes** — request holds a connection, waits for an executor task that also
-needs a connection; classic Hikari pool-exhaustion deadlock (it's in Hikari's own docs).
+**Spring equivalent: yes** — request thread holds a Hikari connection, blocks on
+`future.get()` for an executor task whose DAO needs a connection; classic pool deadlock
+(Hikari's docs give the sizing formula for it).
 
 **Verdict: avoidable pattern, not a config problem.** Rule: *inside a transaction, only do
-that transaction's work.* Await other results before opening the transaction, use them inside,
-or use them after. Coroutines make this easier to type accidentally than Spring did, because
-`await()` looks free — it isn't when you hold a permit.
+that transaction's work.* Either `await()` **before** opening the transaction, or call the
+code **directly** (nested same-coroutine call is safe — it joins). Coroutines make this easier
+to type accidentally than Spring did, because `await()` doesn't look like blocking — but while
+holding a permit, it is.
 
 ## 2. Slow queries / too many requests → permit waiting
 
