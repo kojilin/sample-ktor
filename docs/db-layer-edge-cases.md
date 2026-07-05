@@ -121,6 +121,29 @@ writes landing outside the transaction.
 **Verdict: nothing async escapes the statement lambda** (companion to the "return DTOs" rule).
 Kick off follow-up work *after* the helper returns.
 
+## 6b. No coroutine builders inside a transaction lambda
+
+The classic rule — **never share one transaction/connection across threads** — applied to
+coroutines. Where a coroutine gets launched from decides what it inherits:
+
+| Coroutine origin | Tx context inherited? | Result |
+|---|---|---|
+| Plain nested call, same coroutine | yes | ✅ joins tx, one permit — the supported case |
+| `appScope.launch` (external scope) | no | new permit + new tx (fine if not awaited inside a tx; mind item 6) |
+| `coroutineScope { launch }` *inside* the statement | yes | ❌ two coroutines share one connection concurrently |
+
+The last row is the trap: it doesn't take a new permit — it **joins the same transaction in
+parallel**, i.e. concurrent use of a single JDBC connection (corrupted statements, protocol
+errors). "Parallelize inserts with async inside the tx" is broken on principle, not just slow.
+
+**Spring equivalent: yes** — same as handing a `Connection` to two threads; everyone already
+knows not to. Coroutines just make the mistake look innocent because `launch` doesn't look
+like a thread.
+
+**Verdict — one review rule covers all rows: inside a transaction lambda, no `launch`/`async`
+at all.** Sequential calls only; anything parallel or fire-and-forget happens before or after
+the helper.
+
 ## 7. Housekeeping (same as any JDBC service)
 
 - **Until Hikari is added:** set `connectTimeout`/`socketTimeout` in the JDBC URL — during a DB
@@ -143,6 +166,7 @@ Kick off follow-up work *after* the helper returns.
 | 4 | 🆕 Exposed auto-retry | ❌ | `maxAttempts = 1`, opt-in retries |
 | 5 | 🆕 Plain API poisons helpers | ❌ (0.x only) | Helper-only ban until Exposed 1.x |
 | 6 | Fire-and-forget inside tx | ✅ (@Async + lazy entities) | Nothing async escapes the lambda |
+| 6b | launch/async inside tx lambda | ✅ (connection shared across threads) | No coroutine builders inside a tx — sequential only |
 | 7 | Connect timeouts / shutdown order | ✅ | Config |
 
 Sizing rule on top of all of it: **permits ≤ dispatcher threads (= Hikari maxPoolSize later)**.
