@@ -150,5 +150,19 @@ fun Application.configureRouting() {
             val s4 = txHash(database.transactionManager.currentOrNull()) // after scope returns
             call.respondText("outerTx=$outerTx s1=$s1 s2=$s2 s3=$s3 s4=$s4 thread=${Thread.currentThread().name}")
         }
+
+        get("/tx-probe-helper") {
+            var outerTx = 0
+            database.suspendedTransactionOnDbDispatcher(permitController, dbDispatcher) {
+                outerTx = System.identityHashCode(this)
+                exec("SELECT 1")
+                delay(100)
+            }
+            val s1 = txHash(database.transactionManager.currentOrNull())
+            val s2 = probeCurrent(database)
+            val s3 = supervisorScope { txHash(database.transactionManager.currentOrNull()) }
+            val s4 = txHash(database.transactionManager.currentOrNull())
+            call.respondText("outerTx=$outerTx s1=$s1 s2=$s2 s3=$s3 s4=$s4 thread=${Thread.currentThread().name}")
+        }
     }
 }
