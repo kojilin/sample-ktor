@@ -16,8 +16,13 @@ summary + FAQ.
 3. **Upgrade Exposed to 1.3.1 before upgrading Ktor.** The Exposed 1.x rewrite eliminates the
    bug class at the source, even on our current Ktor 2.3.12. Migration is mechanical
    (imports, `Transaction`→`JdbcTransaction`, `suspendTransaction` + `withContext`).
-4. **When upgrading Ktor, go straight to ≥ 3.5.1 and skip 3.0–3.4.** In that range dev mode
-   behaves differently from prod (it would break even our helper). 3.5.x needs Kotlin ≥ 2.2.
+4. **When upgrading Ktor, skip 3.2.x–3.3.x; target ≥ 3.4.3 (prefer 3.5.x).** A full version
+   sweep (2.3.13, 3.0.3, 3.1.3, 3.2.3, 3.3.3, 3.4.3, 3.5.1 — dev and prod each) showed the
+   broken window is exactly 3.2.x–3.3.x: dev mode differs from prod there and breaks even our
+   helper. 3.0.3, 3.1.3 and 3.4.3 behave identically to 2.3.12 for the DB layer, so a
+   stepping-stone path exists: `2.3.13 → 3.0.3 → 3.1.3 → (skip) → 3.4.3 → 3.5.x`. 3.5.x needs
+   Kotlin ≥ 2.2. (MDC/CallLogging users: KTOR-6118-class leaks under load were reportedly fixed
+   ~3.2.2, so load-test 3.0–3.1 with your plugin stack.)
 5. Transaction boundaries live at the **usecase level**; Exposed types never escape the
    transaction lambda (return DTOs).
 
@@ -45,8 +50,10 @@ mechanical imports and `Transaction` → `JdbcTransaction`. Callers keep their s
 window / permit-skip / silent-retry class is now gone. **Keep the permit, dispatcher, and the
 helper-only ban** — the ban's reason shifts from "leak" to "connection bounding" while pool-less.
 
-**Stage 2 — Ktor ≥ 3.5.1** (skip 3.0–3.4; Kotlin ≥ 2.2 required). Low-stakes after stage 1
-because the Exposed failure mode that made Ktor's dispatch behavior dangerous no longer exists.
+**Stage 2 — Ktor ≥ 3.4.3, prefer 3.5.x** (skip 3.2.x–3.3.x; Kotlin ≥ 2.2 for 3.5.x). Low-stakes
+after stage 1 because the Exposed failure mode that made Ktor's dispatch behavior dangerous no
+longer exists. If stepping gradually: `3.0.3 → 3.1.3 → 3.4.3 → 3.5.x` are all
+behavior-identical to 2.3.12 for the DB layer (verified per version, both modes).
 
 **Stage 3 — add HikariCP.** `maximumPoolSize` = permits = dbDispatcher threads. Restores
 connection reuse, uniform `connectionTimeout`, keepalive/validation, and pool metrics. New

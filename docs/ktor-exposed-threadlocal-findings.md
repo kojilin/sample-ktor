@@ -36,6 +36,25 @@ after the transaction block returned (a "stale window").
 lost (kotlinx.coroutines#2930 behavior) — no stale binding observed, but blocking SQL after a
 suspension would run on the timer thread.
 
+## Ktor version sweep (Exposed 0.56, dev AND prod tested per version)
+
+| Ktor | Handler thread (prod) | dev == prod? | KTOR-6802 repro (dev) | Helper | Plain tx (no dispatcher) |
+|---|---|---|---|---|---|
+| 2.3.12 / 2.3.13 | event loop | ✅ | passes | ✅ clean | ❌ stale window |
+| 3.0.3 | event loop | ✅ | passes | ✅ clean | ❌ stale window |
+| 3.1.3 | event loop | ✅ | passes | ✅ clean | ❌ stale window |
+| **3.2.1 / 3.2.3** | DefaultDispatcher | ❌ dev broken | **fails** | **❌ leaks in dev** | prod ✅ by accident |
+| **3.3.3** | DefaultDispatcher | ❌ dev broken | **fails** | **❌ leaks in dev** | prod ✅ by accident |
+| 3.4.3 | event loop | ✅ | passes | ✅ clean | ❌ stale window |
+| 3.5.1 | event loop | ✅ | passes | ✅ clean | ❌ stale window |
+
+The problem window is **exactly 3.2.x–3.3.x**: those versions moved handlers to
+`DefaultDispatcher` in prod and lost the dispatcher entirely in dev mode. 3.4.3 reverted to the
+event loop and fixed dev mode (note: a commenter reported 3.4.1 still broken, so within the 3.4
+line prefer ≥ 3.4.3). Every version outside that window behaves identically to 2.3.12 for the
+DB layer — so a stepping-stone upgrade path exists with no behavior change at each step:
+`2.3.13 → 3.0.3 → 3.1.3 → (skip 3.2/3.3) → 3.4.3 → 3.5.x`.
+
 ## The unifying rule
 
 > A stale window exists **iff the caller's resume after the transaction is synchronous
@@ -90,10 +109,12 @@ cross into the next request.
 
 ## Ktor upgrade guidelines for production (currently 2.3.12)
 
-- **Target 3.5.1 or later; skip 3.0.x–3.4.x.** In that range dev mode behaves differently
-  from prod (KTOR-6802 dev leak breaks the helper; call context loses its dispatcher), and
-  versions before 3.2.2 had SFG MDC leaks under load (KTOR-6118, listed as affecting 2.3.12
-  and only fixed around 3.2.2).
+- **Target ≥ 3.4.3 (prefer 3.5.x); skip only 3.2.x–3.3.x.** The version sweep showed the
+  dev≠prod divergence (KTOR-6802 dev leak that breaks the helper; call context loses its
+  dispatcher) exists exactly in 3.2.x–3.3.x. 3.0.3, 3.1.3, and 3.4.3 behave identically to
+  2.3.12 for the DB layer and are valid stepping stones. Caveat for CallLogging/MDC users:
+  KTOR-6118-class SFG leaks under load were reportedly only fixed around 3.2.2, so 3.0.x–3.1.x
+  may still carry those — load-test with your plugin stack if you use MDC.
 - **3.5.1 needs Kotlin ≥ 2.2** (jars carry Kotlin 2.3.0 metadata; Kotlin 2.1.x cannot read it).
 - **Don't rely on which thread runs handlers.** It changed 2.3.12 (event loop) → 3.2.1
   (DefaultDispatcher) → 3.5.1 (event loop again). Any code that got away with plain
