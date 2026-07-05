@@ -21,6 +21,51 @@ summary + FAQ.
 5. Transaction boundaries live at the **usecase level**; Exposed types never escape the
    transaction lambda (return DTOs).
 
+## Recommended migration path
+
+Each stage is independently shippable and verifiable; run the regression check (last FAQ entry)
+after each one. HikariCP may be added at any stage up to and including stage 4 — but see the
+hard constraint there.
+
+**Stage 0 — today (Exposed 0.5x + Ktor 2.3.12, current `Database.kt`, permit, no pool).**
+Valid state: the permit caps concurrent connections at 30, so the DB is protected even without
+a pool. Conditions while pool-less: (a) the helper-only ban is load-bearing — one plain
+`newSuspendedTransaction` bypasses the permit and opens an unbounded connection; (b) set
+driver-level `connectTimeout`/`socketTimeout` in the JDBC URL — connections are opened *inside*
+the permit, so during a DB outage, raw connects hanging on the OS TCP timeout would starve all
+permits (Hikari's `connectionTimeout` normally caps this; the URL params are the substitute).
+Accepted operational cost: per-transaction connect latency, DB-side connection churn (backend
+forks, cold caches, auth/TLS per connect — watch DB CPU and connect-rate alerts), no pool
+metrics.
+
+**Stage 1 — Exposed 1.3.1.** Helper internals change only
+(`withContext(dbDispatcher) { suspendTransaction(db = ...) }`, delete `supervisorScope`,
+`withPermit` → companion `TransactionManager.currentOrNull()` + `.db == this`); repo-wide
+mechanical imports and `Transaction` → `JdbcTransaction`. Callers keep their shape. The stale
+window / permit-skip / silent-retry class is now gone. **Keep the permit, dispatcher, and the
+helper-only ban** — the ban's reason shifts from "leak" to "connection bounding" while pool-less.
+
+**Stage 2 — Ktor ≥ 3.5.1** (skip 3.0–3.4; Kotlin ≥ 2.2 required). Low-stakes after stage 1
+because the Exposed failure mode that made Ktor's dispatch behavior dangerous no longer exists.
+
+**Stage 3 — add HikariCP.** `maximumPoolSize` = permits = dbDispatcher threads. Restores
+connection reuse, uniform `connectionTimeout`, keepalive/validation, and pool metrics. New
+tuning duty: stale-idle-connection settings now exist (they don't in the pool-less stages).
+
+**Stage 4 — virtual threads (Java 21+, prefer 24+), drop the permit.**
+`Executors.newVirtualThreadPerTaskExecutor().asCoroutineDispatcher()` as dbDispatcher — no pool
+to size; blocked `getConnection()` parks a cheap virtual thread; the resume-starvation deadlock
+is structurally impossible. Hikari's `maximumPoolSize` is the bound, `connectionTimeout` the
+shedding (tune it down from 30s). `PermitController` may remain as a metrics/shedding hook but
+is no longer load-bearing. **Hard constraint: never permit-less *and* pool-less** — this stage
+requires stage 3. On Java 21 verify driver pinning (`-Djdk.tracePinnedThreads=full`); Java 24
+(JEP 491) removes the concern. Do this after stage 1, not before: on 0.5x the helper's
+`currentOrNull` branch also does same-tx joining, and the plain-API stale window still exists.
+
+Version-independent rules that carry through every stage: transaction boundaries at the usecase
+level, DTOs at the lambda edge, no cross-DB re-entry (A→B→A), suspending I/O outside
+transactions, DB-side statement timeouts, close the dispatcher's executor on shutdown.
+
 ## The one-paragraph mechanism
 
 Exposed 0.x binds the active transaction to the current *thread* while transaction code runs,
