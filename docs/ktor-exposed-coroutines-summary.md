@@ -28,6 +28,10 @@ summary + FAQ.
 
 ## Recommended migration path
 
+> The concrete ordered plan (Exposed first, then Ktor in one PR, with reasoning) lives in
+> [recommended-upgrade-path.md](recommended-upgrade-path.md); the stages below are the
+> reference detail for each state.
+
 Each stage is independently shippable and verifiable; run the regression check (last FAQ entry)
 after each one. HikariCP may be added at any stage up to and including stage 4 — but see the
 hard constraint there.
